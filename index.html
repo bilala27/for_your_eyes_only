@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="sr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#060208">
+  <title>Love Heart</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: #060208; }
+    canvas { display: block; width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <canvas id="heart" aria-label="Srce sastavljeno od poruka ljubavi"></canvas>
+  <script>
+    (() => {
+      const canvas = document.getElementById("heart");
+      const ctx = canvas.getContext("2d");
+      const BG = [6, 2, 8];
+      const FLASH = [255, 199, 199];
+      const DURATION = 10000;
+      const ANIMATION = 42 * 16;
+      const PHRASES = [
+        "I love you", "Seni seviyorum", "Te amo", "Je t'aime",
+        "Ich liebe dich", "Ti amo", "Eu te amo", "Я тебя люблю",
+        "사랑해", "愛してる", "我爱你", "मैं तुमसे प्यार करता हूँ",
+        "Σ' αγαπώ", "Ik hou van jou", "Jag älskar dig", "Kocham cię",
+        "ฉันรักเธอ", "Anh yêu em", "Aku cinta kamu", "Я тебе кохаю"
+      ];
+
+      let width = 0;
+      let height = 0;
+      let pixelRatio = 1;
+      let layout = [];
+      let rowHeight = 18;
+      let startTime = 0;
+      let nextShimmer = 0;
+      let shimmerIndex = -1;
+      let shimmerEnds = 0;
+      let shimmerStarted = false;
+      const random = seededRandom(11);
+
+      function seededRandom(seed) {
+        let value = seed >>> 0;
+        return () => {
+          value = (value * 1664525 + 1013904223) >>> 0;
+          return value / 4294967296;
+        };
+      }
+
+      function clamp(value) {
+        return Math.max(0, Math.min(1, value));
+      }
+
+      function mix(a, b, amount) {
+        return a.map((value, index) => value + (b[index] - value) * amount);
+      }
+
+      function color(values) {
+        return `rgb(${values.map(value => Math.floor(clamp(value / 255) * 255)).join(",")})`;
+      }
+
+      function heart(angle) {
+        const x = 16 * Math.sin(angle) ** 3;
+        const y = 13 * Math.cos(angle)
+          - 5 * Math.cos(2 * angle)
+          - 2 * Math.cos(3 * angle)
+          - Math.cos(4 * angle);
+        return [x * 21, y * 21 + 20];
+      }
+
+      function spans(points, y) {
+        const xs = [];
+        for (let index = 0; index < points.length; index += 1) {
+          const [x1, y1] = points[index];
+          const [x2, y2] = points[(index + 1) % points.length];
+          if ((y1 <= y && y < y2) || (y2 <= y && y < y1)) {
+            xs.push(x1 + (y - y1) * (x2 - x1) / (y2 - y1));
+          }
+        }
+        xs.sort((a, b) => a - b);
+        const result = [];
+        for (let index = 0; index + 1 < xs.length; index += 2) {
+          result.push([xs[index], xs[index + 1]]);
+        }
+        return result;
+      }
+
+      function intersect(first, second, scale) {
+        const result = [];
+        for (const a of first) {
+          for (const b of second) {
+            const low = Math.max(a[0], b[0]);
+            const high = Math.min(a[1], b[1]);
+            if (high - low >= 14 * scale) result.push([low, high]);
+          }
+        }
+        return result;
+      }
+
+      function buildLayout() {
+        const scale = Math.min(width * 0.88 / 672, height * 0.9 / 720, 1.2);
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const source = Array.from({ length: 720 }, (_, index) => heart(2 * Math.PI * index / 720));
+        const yMin = Math.min(...source.map(point => point[1]));
+        const yMax = Math.max(...source.map(point => point[1]));
+        const yCenter = (yMin + yMax) / 2;
+        const points = source.map(([x, y]) => [
+          centerX + x * scale,
+          centerY - (y - yCenter) * scale
+        ]);
+
+        const sizes = [9, 10, 11, 12].map(size => Math.max(10, size * Math.max(0.88, scale * 1.3)));
+        const lineMetrics = sizes.map(size => {
+          ctx.font = `700 ${size}px Arial, sans-serif`;
+          return ctx.measureText("Mg").actualBoundingBoxAscent
+            + ctx.measureText("Mg").actualBoundingBoxDescent;
+        });
+        rowHeight = Math.max(...lineMetrics) + 5;
+        const halfRow = rowHeight / 2;
+        let phrasePool = [];
+        const nextPhrase = () => {
+          if (!phrasePool.length) {
+            phrasePool = PHRASES.slice();
+            for (let index = phrasePool.length - 1; index > 0; index -= 1) {
+              const swap = Math.floor(random() * (index + 1));
+              [phrasePool[index], phrasePool[swap]] = [phrasePool[swap], phrasePool[index]];
+            }
+          }
+          return phrasePool.pop();
+        };
+        const placed = [];
+
+        const minY = Math.min(...points.map(point => point[1]));
+        const maxY = Math.max(...points.map(point => point[1]));
+        for (let y = minY + halfRow;
+             y < maxY - halfRow;
+             y += rowHeight) {
+          const row = intersect(spans(points, y - halfRow), spans(points, y + halfRow), scale);
+          for (const [rawLow, rawHigh] of row) {
+            const low = rawLow + 4 * scale;
+            const high = rawHigh - 4 * scale;
+            let cursor = low + random() * 8 * scale;
+            const line = [];
+
+            while (cursor < high) {
+              let fit = null;
+              for (let attempt = 0; attempt < 10; attempt += 1) {
+                const text = nextPhrase();
+                const size = sizes[Math.floor(random() * sizes.length)];
+                ctx.font = `700 ${size}px Arial, sans-serif`;
+                const textWidth = ctx.measureText(text).width;
+                if (cursor + textWidth <= high) {
+                  fit = { text, size, width: textWidth };
+                  break;
+                }
+              }
+              if (!fit) break;
+              line.push({ x: cursor + fit.width / 2, y, ...fit });
+              cursor += fit.width + 7 * scale;
+            }
+
+            if (line.length > 1) {
+              const remaining = high - (line[line.length - 1].x + line[line.length - 1].width / 2);
+              line.forEach((item, index) => {
+                item.x += remaining * index / (line.length - 1);
+              });
+            } else if (line.length === 1) {
+              line[0].x = (low + high) / 2;
+            }
+
+            line.forEach((item, index) => {
+              item.edge = index === 0 || index === line.length - 1;
+              item.scale = scale;
+              placed.push(item);
+            });
+          }
+        }
+
+        const wine = [148, 0, 23];
+        const crimson = [230, 13, 36];
+        const blood = [250, 26, 41];
+        for (const item of placed) {
+          const radius = Math.min(1, Math.hypot(
+            (item.x - centerX) / (16 * 21 * scale),
+            (item.y - centerY) / (14.5 * 21 * scale)
+          ));
+          const base = mix(wine, crimson, 0.25 + 0.75 * radius);
+          item.color = mix(base, blood, random() * 0.35 + (item.edge ? 0.3 : 0));
+          item.radius = radius;
+          item.delay = 0;
+          item.offset = (random() * 20 - 10) * scale;
+        }
+
+        const edges = placed.filter(item => item.edge);
+        const inner = placed.filter(item => !item.edge);
+        const angle = item => (Math.atan2(item.x - centerX, centerY - item.y) + 2 * Math.PI) % (2 * Math.PI);
+        edges.sort((a, b) => angle(a) - angle(b));
+        inner.forEach(item => { item.depth = -item.radius + random() * 0.08; });
+        inner.sort((a, b) => a.depth - b.depth);
+        const ordered = edges.concat(inner);
+        const interval = ordered.length ? DURATION / ordered.length : 0;
+        ordered.forEach((item, index) => {
+          item.delay = index * interval;
+          item.index = index;
+        });
+        return ordered;
+      }
+
+      function drawText(text, size, x, y, fill, alpha = 1) {
+        ctx.globalAlpha = alpha;
+        ctx.font = `700 ${size}px Arial, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = fill;
+        ctx.fillText(text, x, y);
+        ctx.globalAlpha = 1;
+      }
+
+      function drawItem(item, elapsed, now) {
+        const progress = clamp((elapsed - item.delay) / ANIMATION);
+        if (progress <= 0) return false;
+        const eased = 1 - (1 - progress) ** 3;
+        const x = item.x + item.offset * (1 - eased);
+        const y = item.y - (1 - eased) * 34 * item.scale;
+        const shadow = mix(BG, item.color.map(channel => channel * 0.3), eased);
+        const halo = mix(BG, item.color.map(channel => channel * 0.2), eased ** 2);
+        drawText(item.text, item.size, item.x + 2 * item.scale, item.y + 3 * item.scale, color(shadow));
+        drawText(item.text, item.size + 1, x, y, color(halo));
+
+        const flash = 0.75 * Math.sin(Math.PI * clamp((progress - 0.55) / 0.45));
+        const main = mix(mix(BG, item.color, eased * 1.5), FLASH, flash);
+        let shimmer = 0;
+        if (item.index === shimmerIndex && now < shimmerEnds) {
+          shimmer = 0.6;
+        }
+        drawText(item.text, item.size, x, y, color(mix(main, FLASH, shimmer)));
+        return progress < 1;
+      }
+
+      function frame(now) {
+        const elapsed = now - startTime;
+        ctx.clearRect(0, 0, width, height);
+        canvas.dataset.elapsed = String(Math.round(elapsed));
+        canvas.dataset.visibleItems = String(layout.filter(item => elapsed >= item.delay).length);
+        for (const item of layout) {
+          drawItem(item, elapsed, now);
+        }
+
+        const lastDelay = layout.length ? layout[layout.length - 1].delay : 0;
+        const finished = elapsed >= lastDelay + ANIMATION;
+        if (finished && layout.length && (!shimmerStarted || now >= nextShimmer)) {
+          shimmerStarted = true;
+          shimmerIndex = Math.floor(random() * layout.length);
+          shimmerEnds = now + 260;
+          nextShimmer = now + 140;
+        }
+        if (!finished) {
+          requestAnimationFrame(frame);
+        } else {
+          setTimeout(() => requestAnimationFrame(frame), 30);
+        }
+      }
+
+      function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.round(width * pixelRatio);
+        canvas.height = Math.round(height * pixelRatio);
+        ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        layout = buildLayout();
+        canvas.dataset.layoutCount = String(layout.length);
+        startTime = performance.now();
+        nextShimmer = 0;
+        shimmerStarted = false;
+        shimmerIndex = -1;
+        requestAnimationFrame(frame);
+      }
+
+      window.addEventListener("resize", resize);
+      resize();
+    })();
+  </script>
+</body>
+</html>
